@@ -3,101 +3,83 @@ function cfg = mp_config()
 %
 %   cfg = mp_config()
 %
-%   Displays a GUI dialog for experiment parameters and returns a
-%   complete configuration struct. All timing, trigger, audio, and
-%   design parameters are set here.
-%
-%   DESIGN (per run):
-%     2 conditions (grasp, touch) × 10 repetitions = 20 trials
-%     Pseudo-random order (max 3 consecutive same condition)
-%
-%   SESSION:
-%     4 runs with effector 1 → manual pause → 4 runs with effector 2
-%
-%   The returned struct contains all fields needed by the other mp_*
-%   functions. No other configuration is needed.
+%   Shows a GUI dialog, validates parameters, builds the run sequence.
+%   Returns a complete configuration struct used by all other mp_* functions.
 %
 %   See also motor_planning, mp_initHardware, mp_buildDesign
 
     cfg = getDefaults();
     cfg = showDialog(cfg);
     cfg = finalizeConfig(cfg);
-end
 
 
 function cfg = getDefaults()
 %GETDEFAULTS  All default parameters in one place
 
-    % ── Identity ──
     cfg.participant      = 'P01';
     cfg.session          = '01';
+    cfg.screenId         = 1;
 
-    % ── Display ──
-    %   'right' = right half of extended desktop
-    %   'left'  = left half
-    %   'full'  = entire screen
-    cfg.displayMode      = 'right';
-
-    % ── Experimental design ──
     cfg.conditions       = {'grasp', 'touch'};
-    cfg.nTrialsPerCond   = 10;       % per condition per run
-    cfg.nTrialsTotal     = 20;       % 2 × 10 (recomputed in finalizeConfig)
-    cfg.maxConsec        = 3;        % max consecutive same condition
+    cfg.nTrialsPerCond   = 10;
+    cfg.nTrialsTotal     = 20;
+    cfg.maxConsec        = 3;
 
-    % ── Run structure ──
-    cfg.effectorFirst    = 'hand';   % 'hand' or 'tool'
+    cfg.effectorFirst    = 'hand';
     cfg.nRunsPerEffector = 4;
     cfg.nRuns            = 8;
 
-    % ── Timing (seconds) ──
-    cfg.previewDur       = 2.0;      % fixation before cue
-    cfg.planDur          = 5.5;      % mean planning period
-    cfg.planJitter       = 0.5;      % ± uniform jitter on plan duration
-    cfg.execDur          = 2.0;      % execution window after go beep
-    cfg.itiDur           = 8.0;      % inter-trial interval
-    cfg.baselineInit     = 10.0;     % fixation before first trial
-    cfg.baselineFinal    = 10.0;     % fixation after last trial
-    cfg.interRunPause    = 20.0;     % minimum pause between same-effector runs
+    cfg.previewDur       = 2.0;
+    cfg.planDur          = 5.5;
+    cfg.planJitter       = 0.5;
+    cfg.execDur          = 2.0;
+    cfg.itiDur           = 8.0;
+    cfg.baselineInit     = 10.0;
+    cfg.baselineFinal    = 10.0;
+    cfg.interRunPause    = 20.0;
 
-    % ── Audio ──
-    cfg.audioFs          = 44100;    % target sample rate (Hz)
-    cfg.audioHwDelay     = 0.000;    % DAC-to-speaker latency (s) — calibrate!
-    cfg.fillAhead        = 0.200;    % fill audio buffer this far before onset (s)
-    cfg.goBeepFreq       = 1000;     % go beep frequency (Hz)
-    cfg.goBeepDur        = 0.500;    % go beep duration (s)
-    cfg.goBeepVol        = 0.70;     % go beep volume (0–1)
+    cfg.audioFs          = 44100;
+    cfg.audioHwDelay     = 0.000;
+    cfg.fillAhead        = 0.200;
+    cfg.goBeepFreq       = 1000;
+    cfg.goBeepDur        = 0.500;
+    cfg.goBeepVol        = 0.70;
     cfg.soundDir         = fullfile(fileparts(mfilename('fullpath')), 'sounds');
 
-    % ── Trigger codes (must be unique, 1–255 for parallel port) ──
-    cfg.codes.run_start  = 100;
-    cfg.codes.run_end    = 200;
-    cfg.codes.trial_start=  30;
-    cfg.codes.cue_grasp  =  11;
-    cfg.codes.cue_touch  =  12;
-    cfg.codes.go_grasp   =  21;
-    cfg.codes.go_touch   =  22;
-    cfg.codes.iti_start  =  40;
+    cfg.codes.run_start  = 2;
+    cfg.codes.run_end    = 6;
+    cfg.codes.trial_start=  10;
+    cfg.codes.cue_grasp  =  18;
+    cfg.codes.cue_touch  =  34;
+    cfg.codes.go_grasp   =  66;
+    cfg.codes.go_touch   =  130;
+    cfg.codes.iti_start  =  255;
 
-    % ── Parallel port ──
     cfg.parportActive    = true;
-    cfg.parportAddr      = hex2dec('D010');
-    cfg.trigPulseS       = 0.005;    % 5 ms pulse width
+    cfg.parportAddr      = hex2dec('3FF8');
+    cfg.trigPulseS       = 0.005;
 
-    % ── Reproducibility ──
     cfg.randomSeed       = round(mod(now * 1e6, 2^32));
 
-    % ── Output directory ──
     cfg.dataDir          = fullfile(fileparts(mfilename('fullpath')), ...
                                    'data', 'motor_planning');
-end
 
 
 function cfg = showDialog(cfg)
 %SHOWDIALOG  GUI dialog for user-configurable parameters
+
+    screens = Screen('Screens');
+    screenList = '';
+    for si = 1:numel(screens)
+        [sw, sh] = Screen('WindowSize', screens(si));
+        screenList = [screenList, sprintf('  %d: %dx%d', screens(si), sw, sh)]; %#ok<AGROW>
+        if si < numel(screens), screenList = [screenList, '  |']; end %#ok<AGROW>
+    end
+
     prompt = { ...
         'Participant ID:', ...
         'Session:', ...
-        'Display mode (right / left / full):', ...
+        sprintf('Screen index [available: %s ]:', screenList), ...
         'First effector (hand / tool):', ...
         'Parallel port active (1/0):', ...
         'Port address (hex):', ...
@@ -107,7 +89,7 @@ function cfg = showDialog(cfg)
     defaults = { ...
         cfg.participant, ...
         cfg.session, ...
-        cfg.displayMode, ...
+        num2str(cfg.screenId), ...
         cfg.effectorFirst, ...
         num2str(cfg.parportActive), ...
         dec2hex(cfg.parportAddr), ...
@@ -122,53 +104,44 @@ function cfg = showDialog(cfg)
 
     cfg.participant   = strtrim(answers{1});
     cfg.session       = strtrim(answers{2});
-    cfg.displayMode   = lower(strtrim(answers{3}));
+    cfg.screenId      = str2double(answers{3});
     cfg.effectorFirst = lower(strtrim(answers{4}));
     cfg.parportActive = str2double(answers{5}) == 1;
     cfg.parportAddr   = hex2dec(strtrim(answers{6}));
     cfg.audioHwDelay  = str2double(answers{7});
     cfg.randomSeed    = round(str2double(answers{8}));
     cfg.interRunPause = str2double(answers{9});
-end
 
 
 function cfg = finalizeConfig(cfg)
 %FINALIZECONFIG  Validate parameters and build derived fields
 
-    % Display mode
-    assert(ismember(cfg.displayMode, {'right','left','full'}), ...
-        'Invalid displayMode: "%s". Use right/left/full.', cfg.displayMode);
+    screens = Screen('Screens');
+    if ~ismember(cfg.screenId, screens)
+        error('Screen %d not found. Available: %s', cfg.screenId, num2str(screens));
+    end
 
-    % Effector
     assert(ismember(cfg.effectorFirst, {'hand','tool'}), ...
-        'Invalid effectorFirst: "%s". Use hand/tool.', cfg.effectorFirst);
+        'Invalid effectorFirst: "%s".', cfg.effectorFirst);
 
-    % Build run sequence: 4 of first effector, then 4 of second
-    if strcmp(cfg.effectorFirst, 'hand')
-        second = 'tool';
-    else
-        second = 'hand';
+    if strcmp(cfg.effectorFirst, 'hand'), second = 'tool';
+    else,                                 second = 'hand';
     end
     cfg.runSequence = [ ...
         repmat({cfg.effectorFirst}, 1, cfg.nRunsPerEffector), ...
         repmat({second},            1, cfg.nRunsPerEffector)];
     cfg.nRuns = numel(cfg.runSequence);
 
-    % Recompute trial count
     cfg.nTrialsTotal = numel(cfg.conditions) * cfg.nTrialsPerCond;
 
-    % Parallel port: Windows only
     if cfg.parportActive && ~ispc
         warning('Parallel port requires Windows — disabled.');
         cfg.parportActive = false;
     end
 
-    % Trigger code uniqueness
     flds = fieldnames(cfg.codes);
     vals = cellfun(@(f) cfg.codes.(f), flds);
-    assert(numel(vals) == numel(unique(vals)), ...
-        'Duplicate trigger codes detected!');
+    assert(numel(vals) == numel(unique(vals)), 'Duplicate trigger codes!');
 
-    fprintf('[OK] Config validated: %d runs, %d trials/run, %d unique triggers.\n', ...
-        cfg.nRuns, cfg.nTrialsTotal, numel(vals));
-end
+    fprintf('[OK] Config validated: screen %d | %d runs | %d trials/run | %d triggers\n', ...
+        cfg.screenId, cfg.nRuns, cfg.nTrialsTotal, numel(vals));
