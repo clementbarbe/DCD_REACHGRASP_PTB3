@@ -317,7 +317,7 @@ function saveAllRuns(allRec, cfg)
         writetable(struct2table(allT), fullfile(cfg.dataDir, [base '.csv']));
         fprintf('[OK] All-runs CSV saved.\n');
     catch ME
-        warning('All-runs CSV failed: %s', ME.message);
+        warning('All-runs CSV failed: %s',   ME.message);
     end
 
     save(fullfile(cfg.dataDir, [base '.mat']), 'allT', 'cfg');
