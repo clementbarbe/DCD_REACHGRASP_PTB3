@@ -1,49 +1,39 @@
-  function motor_planning()
+function motor_planning()
 %MOTOR_PLANNING  Motor planning EEG task — Psychtoolbox-3
 %
-%   Entry point for the experiment. Manages the session loop:
-%   configuration → hardware init → run loop → cleanup.
+%   Entry point. Session loop: config -> hardware -> runs -> cleanup.
+%   Press ESCAPE at any time to quit cleanly.
 %
-%   TRIAL STRUCTURE:
-%     Preview 2 s → Cue audio → Plan 5.5±0.5 s → Go beep → Execute 2 s → ITI 8 s
-%
-%   SESSION STRUCTURE:
-%     4 runs with first effector → manual pause → 4 runs with second effector
-%     20 trials per run (10 grasp + 10 touch, pseudo-randomized)
-%
-%   TRIGGER CODES:
-%     100 run_start  | 200 run_end   | 30 trial_start
-%      11 cue_grasp  |  12 cue_touch
-%      21 go_grasp   |  22 go_touch  | 40 iti_start
+%   TRIGGERS via serial port (uint8 bytes, all with bit 1 set):
+%     130 run_start  | 134 run_end   |  2 trial_start
+%       6 cue_grasp  |  10 cue_touch
+%      18 go_grasp   |  34 go_touch  | 66 iti_start
 %
 %   See also mp_config, mp_initHardware, mp_buildDesign, mp_executeRun
 
-    % ── 1. Configuration ──────────────────────────────────────────────
     cfg = mp_config();
 
     rng(cfg.randomSeed, 'twister');
     fprintf('[INIT] Participant : %s | Session : %s\n', cfg.participant, cfg.session);
     fprintf('[INIT] Random seed : %d\n', cfg.randomSeed);
-    fprintf('[INIT] Screen ID   : %d\n', cfg.screenId);
+    fprintf('[INIT] Triggers    : %s @ %d baud\n', cfg.serialPortName, cfg.serialBaudRate);
     fprintf('[INIT] Runs        : %s\n', strjoin(cfg.runSequence, ', '));
+    fprintf('[INIT] Press ESCAPE at any time to quit.\n');
 
     if ~exist(cfg.dataDir, 'dir'), mkdir(cfg.dataDir); end
 
-    % ── 2. Hardware initialization ────────────────────────────────────
-    w = []; pa = []; ioObj = []; allRec = {};
+    w = []; pa = []; serialObj = []; allRec = {};
 
     try
-        [w, pa, ioObj, snd, cfg] = mp_initHardware(cfg);
+        [w, pa, serialObj, snd, cfg] = mp_initHardware(cfg);
 
         trialDur = cfg.previewDur + cfg.planDur + cfg.execDur + cfg.itiDur;
         runDur   = cfg.baselineInit + cfg.nTrialsTotal * trialDur + cfg.baselineFinal;
         fprintf('[INFO] ~%.1f min/run | ~%.0f min total (%d runs)\n', ...
             runDur/60, runDur * cfg.nRuns / 60, cfg.nRuns);
 
-        % ── 3. Session instructions ───────────────────────────────────
         showSessionInstructions(w, cfg);
 
-        % ── 4. Run loop ───────────────────────────────────────────────
         for ri = 1:cfg.nRuns
             eff = cfg.runSequence{ri};
             fprintf('\n====== RUN %d/%d — %s ======\n', ri, cfg.nRuns, upper(eff));
@@ -58,17 +48,19 @@
             mp_drawFixation(w, cfg);
             Screen('Flip', w);
             t0 = GetSecs;
-            sendTrigger(ioObj, cfg, cfg.codes.run_start);
+            sendTrigger(serialObj, cfg, cfg.codes.run_start);
             fprintf('[OK] Run %d started (t0 = %.6f)\n', ri, t0);
 
-            spinWaitUntil(t0 + cfg.baselineInit);
+            % Initial baseline — ESC checked every 100 ms
+            spinWaitUntil(t0 + cfg.baselineInit, cfg);
 
-            T = mp_executeRun(w, pa, ioObj, snd, T, t0, cfg);
+            T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg);
 
             mp_drawFixation(w, cfg);
             Screen('Flip', w);
-            spinWaitUntil(t0 + T(end).trialEnd + cfg.baselineFinal);
-            sendTrigger(ioObj, cfg, cfg.codes.run_end);
+            % Final baseline — ESC checked every 100 ms
+            spinWaitUntil(t0 + T(end).trialEnd + cfg.baselineFinal, cfg);
+            sendTrigger(serialObj, cfg, cfg.codes.run_end);
 
             Priority(0);
 
@@ -95,7 +87,7 @@
     catch ME
         Priority(0);
         if strcmp(ME.identifier, 'motor_planning:userQuit')
-            fprintf('\n[INFO] Session stopped by user.\n');
+            fprintf('\n[INFO] Session stopped by user (ESCAPE).\n');
         else
             fprintf('\n[ERROR] %s\n', ME.message);
             disp(getReport(ME, 'extended'));
@@ -105,11 +97,11 @@
         end
     end
 
-    cleanupHardware(w, pa, ioObj, cfg);
+    cleanupHardware(w, pa, serialObj, cfg);
 
 
 % #####################################################################
-%  LOCAL FUNCTIONS — Instruction screens
+%  LOCAL — Instruction screens
 % #####################################################################
 
 function showSessionInstructions(w, cfg)
@@ -120,17 +112,20 @@ function showSessionInstructions(w, cfg)
         'Participant : %s\n' ...
         'Session     : %s\n' ...
         'Runs        : %d (%d %s + %d %s)\n' ...
-        'Screen      : %d (%d x %d @ %d Hz)\n\n' ...
+        'Screen      : %d (%d x %d @ %d Hz)\n' ...
+        'Triggers    : %s @ %d baud\n\n' ...
         'Each trial:\n' ...
         '  1. Fixate the cross\n' ...
         '  2. Listen to the instruction (Grasp / Touch)\n' ...
         '  3. WAIT for the beep to execute\n' ...
         '  4. Return to starting position\n\n' ...
+        'Press ESCAPE at any time to stop.\n\n' ...
         '  >> SPACE or ENTER to continue'], ...
         cfg.participant, cfg.session, cfg.nRuns, ...
         cfg.nRunsPerEffector, cfg.runSequence{1}, ...
         cfg.nRunsPerEffector, cfg.runSequence{end}, ...
-        cfg.screenId, cfg.winW, cfg.winH, cfg.fps);
+        cfg.screenId, cfg.winW, cfg.winH, cfg.fps, ...
+        cfg.serialPortName, cfg.serialBaudRate);
     waitForKey(w, cfg, txt);
 
 function showRunInstructions(w, ri, eff, cfg)
@@ -204,7 +199,7 @@ function showSessionEnd(w, cfg)
     WaitSecs(5.0);
 
 function waitForKey(w, cfg, txt)
-%WAITFORKEY  Show text, wait for SPACE / ENTER / numpad-ENTER. Quit on ESC/Q.
+%WAITFORKEY  Show text, wait for SPACE/ENTER. ESCAPE quits.
     DrawFormattedText(w, txt, 'center', 'center', cfg.white, 60);
     Screen('Flip', w);
     WaitSecs(0.3);
@@ -225,21 +220,44 @@ function waitForKey(w, cfg, txt)
 
 
 % #####################################################################
-%  LOCAL FUNCTIONS — Timing, triggers, logging, cleanup
+%  LOCAL — Timing, triggers, logging, cleanup
 % #####################################################################
 
-function spinWaitUntil(targetSecs)
+function spinWaitUntil(targetSecs, cfg)
+%SPINWAITUNTIL  High-precision wait with ESCAPE check every ~100 ms
+%   spinWaitUntil(targetSecs)       — simple wait, no quit check
+%   spinWaitUntil(targetSecs, cfg)  — checks ESCAPE every ~100 ms
+    if nargin < 2
+        % Simple wait (no quit check)
+        while (targetSecs - GetSecs) > 0.0005
+            WaitSecs('YieldSecs', 0.00005);
+        end
+        while GetSecs < targetSecs
+        end
+        return;
+    end
+
+    % Wait with periodic ESCAPE check
+    nextCheck = GetSecs + 0.1;
     while (targetSecs - GetSecs) > 0.0005
+        now_ = GetSecs;
+        if now_ >= nextCheck
+            [kd, ~, kc] = KbCheck(-1);
+            if kd && (kc(cfg.keys.escape) || kc(cfg.keys.q))
+                error('motor_planning:userQuit', 'User quit (Escape).');
+            end
+            nextCheck = now_ + 0.1;
+        end
         WaitSecs('YieldSecs', 0.00005);
     end
     while GetSecs < targetSecs
     end
 
-function sendTrigger(ioObj, cfg, code)
-    if cfg.parportActive && ~isempty(ioObj) && code > 0
-        io64(ioObj, cfg.parportAddr, code);
+function sendTrigger(serialObj, cfg, code)
+    if cfg.triggerActive && ~isempty(serialObj) && code > 0
+        write(serialObj, uint8(code), 'uint8');
         WaitSecs(cfg.trigPulseS);
-        io64(ioObj, cfg.parportAddr, 0);
+        write(serialObj, uint8(0), 'uint8');
     end
 
 function logTimingSummary(T, ri, eff)
@@ -270,12 +288,16 @@ function saveAllRuns(allRec, cfg)
     save(fullfile(cfg.dataDir, [base '.mat']), 'allT', 'cfg');
     fprintf('[OK] All-runs MAT saved.\n');
 
-function cleanupHardware(w, pa, ioObj, cfg)
+function cleanupHardware(w, pa, serialObj, cfg)
     Priority(0);
     ShowCursor;
     try if ~isempty(pa), PsychPortAudio('Close', pa); end; catch, end
     try if ~isempty(w),  Screen('CloseAll');            end; catch, end
-    if cfg.parportActive && ~isempty(ioObj)
-        try io64(ioObj, cfg.parportAddr, 0); catch, end
+    if ~isempty(serialObj)
+        try
+            write(serialObj, uint8(0), 'uint8');
+            delete(serialObj);
+        catch
+        end
     end
     fprintf('[OK] Cleanup complete.\n');

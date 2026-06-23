@@ -1,13 +1,8 @@
-function T = mp_executeRun(w, pa, ioObj, snd, T, t0, cfg)
-%MP_EXECUTERUN  Execute all trials of one run with precise audio timing
+function T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg)
+%MP_EXECUTERUN  Execute all trials with precise audio timing
 %
-%   T = mp_executeRun(w, pa, ioObj, snd, T, t0, cfg)
-%
-%   AUDIO SCHEDULING:
-%     1. Buffer filled 200 ms before target onset
-%     2. PsychPortAudio('Start', pa, 1, WHEN, 1) blocks until DAC onset
-%     3. Trigger sent immediately after (< 0.2 ms coupling)
-%     4. audioHwDelay compensates DAC-to-speaker latency
+%   ESCAPE can be pressed at any time to quit cleanly.
+%   Quit is checked: before each phase, and every ~100 ms during waits.
 %
 %   See also mp_buildDesign, motor_planning
 
@@ -22,13 +17,15 @@ function T = mp_executeRun(w, pa, ioObj, snd, T, t0, cfg)
         mp_drawFixation(w, cfg);
         vbl = Screen('Flip', w, t0 + tr.previewOnset - cfg.halfIfi);
         tr.actualPreviewVbl = vbl - t0;
-        trigSend(ioObj, cfg, cfg.codes.trial_start);
+        trigSend(serialObj, cfg, cfg.codes.trial_start);
+
+        % Wait through preview with ESC check
+        spinWaitUntil(t0 + tr.cueOnset - cfg.fillAhead, cfg);
 
         % ── CUE AUDIO ───────────────────────────────────────────
         cueBuf    = snd.(tr.condition);
         targetCue = t0 + tr.cueOnset;
 
-        spinWaitUntil(targetCue - cfg.fillAhead);
         PsychPortAudio('Stop', pa, 0);
         PsychPortAudio('FillBuffer', pa, cueBuf);
 
@@ -45,17 +42,16 @@ function T = mp_executeRun(w, pa, ioObj, snd, T, t0, cfg)
         if cfg.audioHwDelay > 0
             spinWaitUntil(actualCue + cfg.audioHwDelay);
         end
-        tr.actualCueTriggerT = trigSendTimed(ioObj, cfg, tr.cueCode, t0);
+        tr.actualCueTriggerT = trigSendTimed(serialObj, cfg, tr.cueCode, t0);
         tr.actualCueDacOnset = actualCue - t0;
         tr.cueSchedErrorMs   = (actualCue - targetCue) * 1000;
 
-        % ── PLAN PERIOD ──────────────────────────────────────────
-        checkQuit(cfg);
+        % ── PLAN PERIOD — ESC checked every 100 ms ──────────────
+        spinWaitUntil(t0 + tr.goOnset - cfg.fillAhead, cfg);
 
         % ── GO BEEP ─────────────────────────────────────────────
         targetGo = t0 + tr.goOnset;
 
-        spinWaitUntil(targetGo - cfg.fillAhead);
         PsychPortAudio('Stop', pa, 0);
         PsychPortAudio('FillBuffer', pa, snd.go);
 
@@ -72,16 +68,21 @@ function T = mp_executeRun(w, pa, ioObj, snd, T, t0, cfg)
         if cfg.audioHwDelay > 0
             spinWaitUntil(actualGo + cfg.audioHwDelay);
         end
-        tr.actualGoTriggerT = trigSendTimed(ioObj, cfg, tr.goCode, t0);
+        tr.actualGoTriggerT = trigSendTimed(serialObj, cfg, tr.goCode, t0);
         tr.actualGoDacOnset = actualGo - t0;
         tr.goSchedErrorMs   = (actualGo - targetGo) * 1000;
 
-        % ── ITI ──────────────────────────────────────────────────
-        spinWaitUntil(t0 + tr.itiOnset);
-        tr.actualItiTriggerT = trigSendTimed(ioObj, cfg, cfg.codes.iti_start, t0);
+        % ── EXECUTE + ITI — ESC checked every 100 ms ────────────
+        spinWaitUntil(t0 + tr.itiOnset, cfg);
+        tr.actualItiTriggerT = trigSendTimed(serialObj, cfg, cfg.codes.iti_start, t0);
 
         mp_drawFixation(w, cfg);
         Screen('Flip', w);
+
+        % Wait through ITI with ESC check
+        if ti < nTrials
+            spinWaitUntil(t0 + tr.trialEnd, cfg);
+        end
 
         T(ti) = tr;
         fprintf('  Trial %2d/%d (%s) | cue %+.2f ms | go %+.2f ms\n', ...
@@ -91,37 +92,57 @@ function T = mp_executeRun(w, pa, ioObj, snd, T, t0, cfg)
 
 % =====================================================================
 
-function spinWaitUntil(targetSecs)
-%SPINWAITUNTIL  Yield CPU then busy-wait for last 0.5 ms
+function spinWaitUntil(targetSecs, cfg)
+%SPINWAITUNTIL  High-precision wait with ESCAPE check every ~100 ms
+%   spinWaitUntil(targetSecs)       — simple, no quit check
+%   spinWaitUntil(targetSecs, cfg)  — checks ESCAPE every ~100 ms
+    if nargin < 2
+        while (targetSecs - GetSecs) > 0.0005
+            WaitSecs('YieldSecs', 0.00005);
+        end
+        while GetSecs < targetSecs
+        end
+        return;
+    end
+
+    nextCheck = GetSecs + 0.1;
     while (targetSecs - GetSecs) > 0.0005
+        now_ = GetSecs;
+        if now_ >= nextCheck
+            [kd, ~, kc] = KbCheck(-1);
+            if kd && (kc(cfg.keys.escape) || kc(cfg.keys.q))
+                error('motor_planning:userQuit', 'User quit (Escape).');
+            end
+            nextCheck = now_ + 0.1;
+        end
         WaitSecs('YieldSecs', 0.00005);
     end
     while GetSecs < targetSecs
     end
 
-function relT = trigSendTimed(ioObj, cfg, code, t0)
-%TRIGSENDTIMED  Parallel port pulse, returns rising-edge time relative to t0
-    if cfg.parportActive && ~isempty(ioObj) && code > 0
-        io64(ioObj, cfg.parportAddr, code);
+function relT = trigSendTimed(serialObj, cfg, code, t0)
+%TRIGSENDTIMED  Serial trigger pulse, returns time relative to t0
+    if cfg.triggerActive && ~isempty(serialObj) && code > 0
+        write(serialObj, uint8(code), 'uint8');
         absT = GetSecs;
         WaitSecs(cfg.trigPulseS);
-        io64(ioObj, cfg.parportAddr, 0);
+        write(serialObj, uint8(0), 'uint8');
     else
         absT = GetSecs;
     end
     relT = absT - t0;
 
-function trigSend(ioObj, cfg, code)
-%TRIGSEND  Parallel port pulse, no timing return
-    if cfg.parportActive && ~isempty(ioObj) && code > 0
-        io64(ioObj, cfg.parportAddr, code);
+function trigSend(serialObj, cfg, code)
+%TRIGSEND  Serial trigger pulse, no timing return
+    if cfg.triggerActive && ~isempty(serialObj) && code > 0
+        write(serialObj, uint8(code), 'uint8');
         WaitSecs(cfg.trigPulseS);
-        io64(ioObj, cfg.parportAddr, 0);
+        write(serialObj, uint8(0), 'uint8');
     end
 
 function checkQuit(cfg)
-%CHECKQUIT  Throw error on ESC/Q for clean exit
+%CHECKQUIT  Immediate ESC/Q check — throws error for clean exit
     [kd, ~, kc] = KbCheck(-1);
     if kd && (kc(cfg.keys.escape) || kc(cfg.keys.q))
-        error('motor_planning:userQuit', 'User quit (Escape/Q).');
+        error('motor_planning:userQuit', 'User quit (Escape).');
     end

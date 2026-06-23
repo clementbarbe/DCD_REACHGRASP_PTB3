@@ -1,35 +1,48 @@
-function [w, pa, ioObj, snd, cfg] = mp_initHardware(cfg)
-%MP_INITHARDWARE  Initialize audio, screen, parallel port, and sounds
+function [w, pa, serialObj, snd, cfg] = mp_initHardware(cfg)
+%MP_INITHARDWARE  Initialize audio, screen, serial port, and sounds
 %
-%   [w, pa, ioObj, snd, cfg] = mp_initHardware(cfg)
+%   [w, pa, serialObj, snd, cfg] = mp_initHardware(cfg)
 %
 %   INIT ORDER (important for Win11 stability):
 %     1. Clean stale PTB state
-%     2. Audio (before screen — so audio fallback can't kill window)
+%     2. Audio (before screen)
 %     3. Sounds
 %     4. Fullscreen window on cfg.screenId
-%     5. Parallel port
+%     5. Serial port for EEG triggers
 %
 %   See also mp_config, motor_planning
 
     % ── Step 0: Clean stale PTB state ─────────────────────────────────
-    try PsychPortAudio('Close'); catch, end
-    try Screen('CloseAll');      catch, end
+    %   Must call InitializePsychSound BEFORE PsychPortAudio('Close'),
+    %   otherwise the DLL isn't loaded yet and Close crashes.
+    try
+        InitializePsychSound(0);          % load DLL quietly
+        PsychPortAudio('Close');          % close any stale devices
+    catch
+    end
+    try Screen('CloseAll'); catch, end
     WaitSecs(0.1);
 
     % ── Step 1: PTB preferences ───────────────────────────────────────
     PsychDefaultSetup(2);
     KbName('UnifyKeyNames');
-    cfg.keys.escape  = KbName('ESCAPE');
-    cfg.keys.q       = KbName('q');
-    cfg.keys.space   = KbName('space');
-    cfg.keys.enter   = KbName('Return');
-    cfg.keys.numEnter = KbName('b');   % numpad enter (different keycode)
+    cfg.keys.escape = KbName('ESCAPE');
+    cfg.keys.q      = KbName('q');
+    cfg.keys.space  = KbName('space');
+    cfg.keys.enter  = KbName('Return');
+
+    % Numpad Enter has different names across systems — safe lookup
+    try
+        cfg.keys.numEnter = KbName('Enter');
+    catch
+        cfg.keys.numEnter = cfg.keys.enter;   % fallback: same as Return
+        fprintf('[INFO] Numpad Enter key not found — using Return for both.\n');
+    end
 
     Screen('Preference', 'SkipSyncTests',    2);
     Screen('Preference', 'VisualDebugLevel', 1);
     Screen('Preference', 'Verbosity',        3);
-    fprintf('[OK] PTB preferences set (SkipSyncTests=2 for Win11/DWM).\n');
+    fprintf('[OK] PTB preferences set.\n');
 
     % ── Step 2: Audio BEFORE screen ───────────────────────────────────
     fprintf('[INFO] Initializing audio...\n');
@@ -56,8 +69,7 @@ function [w, pa, ioObj, snd, cfg] = mp_initHardware(cfg)
 
     % ── Step 4: Screen AFTER audio ────────────────────────────────────
     screenId = cfg.screenId;
-
-    screens = Screen('Screens');
+    screens  = Screen('Screens');
     fprintf('[INFO] Screens:');
     for si = 1:numel(screens)
         [sw, sh] = Screen('WindowSize', screens(si));
@@ -77,7 +89,6 @@ function [w, pa, ioObj, snd, cfg] = mp_initHardware(cfg)
     fprintf('[INFO] Window handle = %d | rect = [%d %d %d %d]\n', ...
         w, wRect(1), wRect(2), wRect(3), wRect(4));
 
-    % Validate immediately
     try
         Screen('Flip', w);
         Screen('TextSize', w, 32);
@@ -95,8 +106,8 @@ function [w, pa, ioObj, snd, cfg] = mp_initHardware(cfg)
     [cfg.xc, cfg.yc] = RectCenter(wRect);
     cfg.ifi = Screen('GetFlipInterval', w);
     if cfg.ifi <= 0 || cfg.ifi > 0.1
-        warning('Unusual flip interval %.4f s — using OS-reported rate.', cfg.ifi);
-        cfg.ifi = 1/120;
+        warning('Unusual flip interval %.4f s — using 1/60.', cfg.ifi);
+        cfg.ifi = 1/60;
     end
     cfg.halfIfi = cfg.ifi / 2;
     cfg.fps     = round(1 / cfg.ifi);
@@ -106,22 +117,12 @@ function [w, pa, ioObj, snd, cfg] = mp_initHardware(cfg)
     fprintf('[OK] Window: %d x %d @ %d Hz (%.2f ms/frame) on screen %d\n', ...
         cfg.winW, cfg.winH, cfg.fps, cfg.ifi*1000, screenId);
 
-    % ── Step 5: Parallel port ─────────────────────────────────────────
-    ioObj = [];
-    if cfg.parportActive
-        try
-            ioObj = io64;
-            st = io64(ioObj);
-            assert(st == 0, 'io64 returned status %d', st);
-            io64(ioObj, cfg.parportAddr, 0);
-            fprintf('[OK] Parallel port @ 0x%04X\n', cfg.parportAddr);
-        catch ME
-            warning('Parallel port failed: %s — simulation mode.', ME.message);
-            ioObj = [];
-            cfg.parportActive = false;
-        end
+    % ── Step 5: Serial port ───────────────────────────────────────────
+    serialObj = [];
+    if cfg.triggerActive
+        serialObj = openSerialPort(cfg);
     else
-        fprintf('[INFO] Parallel port DISABLED.\n');
+        fprintf('[INFO] Triggers DISABLED (simulation mode).\n');
     end
 
     % ── Step 6: Final end-to-end test ─────────────────────────────────
@@ -133,8 +134,44 @@ function [w, pa, ioObj, snd, cfg] = mp_initHardware(cfg)
 
 
 % =====================================================================
-%  LOCAL FUNCTIONS
-% =====================================================================
+
+function serialObj = openSerialPort(cfg)
+%OPENSERIALPORT  Open serial port for EEG trigger transmission
+
+    portName = cfg.serialPortName;
+    baudRate = cfg.serialBaudRate;
+
+    try
+        avail = serialportlist("available");
+        fprintf('[INFO] Available serial ports: %s\n', strjoin(avail, ', '));
+    catch
+        avail = {};
+        fprintf('[INFO] Could not list serial ports.\n');
+    end
+
+    try
+        serialObj = serialport(portName, baudRate);
+        configureTerminator(serialObj, "LF");
+        serialObj.Timeout = 1;
+
+        write(serialObj, uint8(0), 'uint8');
+        WaitSecs(0.01);
+        fprintf('[OK] Serial port %s @ %d baud opened.\n', portName, baudRate);
+
+        write(serialObj, uint8(255), 'uint8');
+        WaitSecs(cfg.trigPulseS);
+        write(serialObj, uint8(0), 'uint8');
+        fprintf('[OK] Serial trigger test (code 255) sent.\n');
+
+    catch ME
+        warning('Serial port %s failed: %s — simulation mode.', portName, ME.message);
+        if ~isempty(avail)
+            fprintf('[HINT] Available ports: %s\n', strjoin(avail, ', '));
+        end
+        serialObj = [];
+        cfg.triggerActive = false;
+    end
+
 
 function pa = openAudioDevice(cfg)
 %OPENAUDIODEVICE  Open PsychPortAudio with latency class fallback 3->2->1->0
