@@ -1,17 +1,8 @@
 function mp_drawFixation(w, cfg)
 %MP_DRAWFIXATION  Draw a white fixation cross at screen center
-%
-%   mp_drawFixation(w, cfg)
-%
-%   Draws a '+' cross (40x40 px, 3 px line width). Does NOT flip —
-%   the caller must call Screen('Flip', w) when ready.
-%
-%   INPUTS:
-%     w   — PTB window handle
-%     cfg — Config struct (needs .white, .xc, .yc)
-%
-%   See also motor_planning, mp_executeRun
+%   Bigger cross (60x60 px, 4 px width) for better visibility.
+%   Does NOT flip.
 
-    sz     = 20;
+    sz     = 30;
     coords = [-sz sz 0 0; 0 0 -sz sz];
-    Screen('DrawLines', w, coords, 3, cfg.white, [cfg.xc cfg.yc], 2);
+    Screen('DrawLines', w, coords, 4, [1 1 1], [cfg.xc cfg.yc], 2);
