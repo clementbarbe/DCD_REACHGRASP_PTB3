@@ -4,10 +4,12 @@ function motor_planning()
 %   Entry point. Session loop: config -> hardware -> runs -> cleanup.
 %   Press ESCAPE at any time to quit cleanly.
 %
-%   TRIGGERS via serial port (uint8 bytes, all with bit 1 set):
-%     130 run_start  | 134 run_end   |  2 trial_start
-%       6 cue_grasp  |  10 cue_touch
-%      18 go_grasp   |  34 go_touch  | 66 iti_start
+%   DISPLAY:
+%     - "Press SPACE to start" before session
+%     - Fixation cross during trials
+%     - "PAUSE — Run X/Y complete" between runs
+%     - "EFFECTOR CHANGE" when switching hand/tool
+%     - "EXAM COMPLETE" at the end
 %
 %   See also mp_config, mp_initHardware, mp_buildDesign, mp_executeRun
 
@@ -32,7 +34,13 @@ function motor_planning()
         fprintf('[INFO] ~%.1f min/run | ~%.0f min total (%d runs)\n', ...
             runDur/60, runDur * cfg.nRuns / 60, cfg.nRuns);
 
-        showSessionInstructions(w, cfg);
+        % ── Welcome screen ────────────────────────────────────────
+        showCentered(w, cfg, [ ...
+            'MOTOR PLANNING TASK\n\n' ...
+            'Fixate the cross during the exam.\n' ...
+            'Listen and follow the audio instructions.\n\n' ...
+            'Press SPACE to start']);
+        waitForKey(w, cfg);
 
         for ri = 1:cfg.nRuns
             eff = cfg.runSequence{ri};
@@ -41,7 +49,20 @@ function motor_planning()
             T = mp_buildDesign(cfg, eff, ri);
             mp_saveData(T, 'planned', ri, eff, cfg);
 
-            showRunInstructions(w, ri, eff, cfg);
+            % ── Pre-run: show effector + ready prompt ─────────────
+            if strcmp(eff, 'hand'), lab = 'HAND';
+            else,                   lab = 'TOOL (forceps)';
+            end
+            showCentered(w, cfg, sprintf([ ...
+                'Run %d / %d  —  %s\n\n' ...
+                '%d trials\n\n' ...
+                'Press SPACE when ready'], ...
+                ri, cfg.nRuns, lab, cfg.nTrialsTotal));
+            waitForKey(w, cfg);
+
+            % ── "Exam in progress" then fixation ──────────────────
+            showCentered(w, cfg, 'Exam in progress...');
+            WaitSecs(1.5);
 
             Priority(MaxPriority(w));
 
@@ -51,14 +72,12 @@ function motor_planning()
             sendTrigger(serialObj, cfg, cfg.codes.run_start);
             fprintf('[OK] Run %d started (t0 = %.6f)\n', ri, t0);
 
-            % Initial baseline — ESC checked every 100 ms
             spinWaitUntil(t0 + cfg.baselineInit, cfg);
 
             T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg);
 
             mp_drawFixation(w, cfg);
             Screen('Flip', w);
-            % Final baseline — ESC checked every 100 ms
             spinWaitUntil(t0 + T(end).trialEnd + cfg.baselineFinal, cfg);
             sendTrigger(serialObj, cfg, cfg.codes.run_end);
 
@@ -70,17 +89,26 @@ function motor_planning()
 
             fprintf('[OK] Run %d/%d (%s) complete.\n', ri, cfg.nRuns, eff);
 
+            % ── Inter-run screens ─────────────────────────────────
             if ri < cfg.nRuns
                 nextEff = cfg.runSequence{ri + 1};
                 if ~strcmp(eff, nextEff)
-                    showEffectorChangePause(w, ri, nextEff, cfg);
+                    % EFFECTOR CHANGE — manual pause
+                    showEffectorChange(w, ri, nextEff, cfg);
                 else
-                    showInterRunPause(w, ri, cfg);
+                    % SAME EFFECTOR — timed pause
+                    showPause(w, ri, cfg);
                 end
             end
         end
 
-        showSessionEnd(w, cfg);
+        % ── Session end ───────────────────────────────────────────
+        showCentered(w, cfg, [ ...
+            'EXAM COMPLETE\n\n' ...
+            sprintf('All %d runs finished.\n\n', cfg.nRuns) ...
+            'Thank you for your participation!']);
+        WaitSecs(5.0);
+
         saveAllRuns(allRec, cfg);
         fprintf('\n[OK] Session complete: %d runs.\n', cfg.nRuns);
 
@@ -101,57 +129,30 @@ function motor_planning()
 
 
 % #####################################################################
-%  LOCAL — Instruction screens
+%  LOCAL — Display helpers
 % #####################################################################
 
-function showSessionInstructions(w, cfg)
-    txt = sprintf([ ...
-        '===================================\n' ...
-        '      MOTOR PLANNING TASK\n' ...
-        '===================================\n\n' ...
-        'Participant : %s\n' ...
-        'Session     : %s\n' ...
-        'Runs        : %d (%d %s + %d %s)\n' ...
-        'Screen      : %d (%d x %d @ %d Hz)\n' ...
-        'Triggers    : %s @ %d baud\n\n' ...
-        'Each trial:\n' ...
-        '  1. Fixate the cross\n' ...
-        '  2. Listen to the instruction (Grasp / Touch)\n' ...
-        '  3. WAIT for the beep to execute\n' ...
-        '  4. Return to starting position\n\n' ...
-        'Press ESCAPE at any time to stop.\n\n' ...
-        '  >> SPACE or ENTER to continue'], ...
-        cfg.participant, cfg.session, cfg.nRuns, ...
-        cfg.nRunsPerEffector, cfg.runSequence{1}, ...
-        cfg.nRunsPerEffector, cfg.runSequence{end}, ...
-        cfg.screenId, cfg.winW, cfg.winH, cfg.fps, ...
-        cfg.serialPortName, cfg.serialBaudRate);
-    waitForKey(w, cfg, txt);
+function showCentered(w, cfg, txt)
+%SHOWCENTERED  Draw white text centered on black background, then flip.
+%   Does NOT wait — returns immediately after flip.
+    Screen('FillRect', w, cfg.black);
+    DrawFormattedText(w, txt, 'center', 'center', cfg.white, 60);
+    Screen('Flip', w);
 
-function showRunInstructions(w, ri, eff, cfg)
-    if strcmp(eff, 'hand'), lab = 'HAND';
-    else,                   lab = 'TOOL (forceps)';
-    end
-    txt = sprintf([ ...
-        '---- Run %d / %d ----\n\n' ...
-        'Effector : %s\n' ...
-        '%d trials (%d grasp + %d touch)\n\n' ...
-        'Get ready.\n\n' ...
-        '  >> SPACE or ENTER when ready'], ...
-        ri, cfg.nRuns, lab, ...
-        cfg.nTrialsTotal, cfg.nTrialsPerCond, cfg.nTrialsPerCond);
-    waitForKey(w, cfg, txt);
-
-function showInterRunPause(w, ri, cfg)
+function showPause(w, ri, cfg)
+%SHOWPAUSE  Timed mandatory rest, then SPACE to continue.
     pauseDur = cfg.interRunPause;
     tStart   = GetSecs;
 
+    % Countdown
     while (GetSecs - tStart) < pauseDur
         remaining = ceil(pauseDur - (GetSecs - tStart));
         txt = sprintf([ ...
-            '=== Run %d/%d complete ===\n\n' ...
-            'Mandatory rest: %d s remaining\n\n' ...
-            'Please wait...'], ri, cfg.nRuns, remaining);
+            'PAUSE\n\n' ...
+            'Run %d / %d complete\n\n' ...
+            'Rest: %d s remaining\n\n' ...
+            'Stay still, relax...'], ri, cfg.nRuns, remaining);
+        Screen('FillRect', w, cfg.black);
         DrawFormattedText(w, txt, 'center', 'center', cfg.white, 60);
         Screen('Flip', w);
 
@@ -162,46 +163,32 @@ function showInterRunPause(w, ri, cfg)
         WaitSecs(0.5);
     end
 
-    txt = sprintf([ ...
-        '=== Run %d/%d complete ===\n\n' ...
-        'Rest complete.\n\n' ...
-        '  >> SPACE or ENTER when ready for run %d'], ...
-        ri, cfg.nRuns, ri+1);
-    waitForKey(w, cfg, txt);
+    showCentered(w, cfg, sprintf([ ...
+        'PAUSE\n\n' ...
+        'Run %d / %d complete\n\n' ...
+        'Press SPACE when ready for run %d'], ...
+        ri, cfg.nRuns, ri+1));
+    waitForKey(w, cfg);
 
-function showEffectorChangePause(w, ri, nextEff, cfg)
+function showEffectorChange(w, ri, nextEff, cfg)
+%SHOWEFFECTORCHANGE  Manual pause for switching effector (hand <-> tool).
     if strcmp(nextEff, 'hand'), lab = 'HAND';
     else,                       lab = 'TOOL (forceps)';
     end
-    txt = sprintf([ ...
-        '========================================\n' ...
-        '       EFFECTOR CHANGE\n' ...
-        '========================================\n\n' ...
-        'Run %d/%d complete.\n\n' ...
-        'Next effector: %s\n\n' ...
-        '  - Give/remove forceps\n' ...
-        '  - Reposition object on table\n' ...
-        '  - Recalibrate distance\n\n' ...
-        'Take your time.\n\n' ...
-        '  >> SPACE or ENTER when participant is ready'], ...
-        ri, cfg.nRuns, lab);
-    waitForKey(w, cfg, txt);
 
-function showSessionEnd(w, cfg)
-    txt = sprintf([ ...
-        '===================================\n' ...
-        '       SESSION COMPLETE\n' ...
-        '===================================\n\n' ...
-        'All %d runs finished.\n\n' ...
-        'Thank you for your participation!'], cfg.nRuns);
-    DrawFormattedText(w, txt, 'center', 'center', cfg.white, 60);
-    Screen('Flip', w);
-    WaitSecs(5.0);
+    showCentered(w, cfg, sprintf([ ...
+        'PAUSE — EFFECTOR CHANGE\n\n' ...
+        'Run %d / %d complete\n\n' ...
+        'Next: %s\n\n' ...
+        '- Change the object / tool\n' ...
+        '- Adjust position\n' ...
+        '- Take your time\n\n' ...
+        'Press SPACE when ready to continue'], ...
+        ri, cfg.nRuns, lab));
+    waitForKey(w, cfg);
 
-function waitForKey(w, cfg, txt)
-%WAITFORKEY  Show text, wait for SPACE/ENTER. ESCAPE quits.
-    DrawFormattedText(w, txt, 'center', 'center', cfg.white, 60);
-    Screen('Flip', w);
+function waitForKey(w, cfg) %#ok<INUSL>
+%WAITFORKEY  Block until SPACE/ENTER. ESCAPE quits.
     WaitSecs(0.3);
     KbReleaseWait(-1);
     while true
@@ -225,10 +212,7 @@ function waitForKey(w, cfg, txt)
 
 function spinWaitUntil(targetSecs, cfg)
 %SPINWAITUNTIL  High-precision wait with ESCAPE check every ~100 ms
-%   spinWaitUntil(targetSecs)       — simple wait, no quit check
-%   spinWaitUntil(targetSecs, cfg)  — checks ESCAPE every ~100 ms
     if nargin < 2
-        % Simple wait (no quit check)
         while (targetSecs - GetSecs) > 0.0005
             WaitSecs('YieldSecs', 0.00005);
         end
@@ -237,7 +221,6 @@ function spinWaitUntil(targetSecs, cfg)
         return;
     end
 
-    % Wait with periodic ESCAPE check
     nextCheck = GetSecs + 0.1;
     while (targetSecs - GetSecs) > 0.0005
         now_ = GetSecs;

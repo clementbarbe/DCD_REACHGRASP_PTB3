@@ -1,8 +1,8 @@
 function T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg)
 %MP_EXECUTERUN  Execute all trials with precise audio timing
 %
+%   During trials: fixation cross centered + small status text at bottom.
 %   ESCAPE can be pressed at any time to quit cleanly.
-%   Quit is checked: before each phase, and every ~100 ms during waits.
 %
 %   See also mp_buildDesign, motor_planning
 
@@ -13,8 +13,8 @@ function T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg)
 
         checkQuit(cfg);
 
-        % ── PREVIEW ──────────────────────────────────────────────
-        mp_drawFixation(w, cfg);
+        % ── PREVIEW: fixation + status ───────────────────────────
+        drawTrialScreen(w, cfg, ti, nTrials);
         vbl = Screen('Flip', w, t0 + tr.previewOnset - cfg.halfIfi);
         tr.actualPreviewVbl = vbl - t0;
         trigSend(serialObj, cfg, cfg.codes.trial_start);
@@ -72,14 +72,14 @@ function T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg)
         tr.actualGoDacOnset = actualGo - t0;
         tr.goSchedErrorMs   = (actualGo - targetGo) * 1000;
 
-        % ── EXECUTE + ITI — ESC checked every 100 ms ────────────
+        % ── EXECUTE + ITI ────────────────────────────────────────
         spinWaitUntil(t0 + tr.itiOnset, cfg);
         tr.actualItiTriggerT = trigSendTimed(serialObj, cfg, cfg.codes.iti_start, t0);
 
-        mp_drawFixation(w, cfg);
+        % Show fixation during ITI
+        drawTrialScreen(w, cfg, ti, nTrials);
         Screen('Flip', w);
 
-        % Wait through ITI with ESC check
         if ti < nTrials
             spinWaitUntil(t0 + tr.trialEnd, cfg);
         end
@@ -92,10 +92,22 @@ function T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg)
 
 % =====================================================================
 
+function drawTrialScreen(w, cfg, trialNum, nTrials)
+%DRAWTRIALSCREEN  Fixation cross + small status text at bottom
+    Screen('FillRect', w, cfg.black);
+
+    % Fixation cross
+    mp_drawFixation(w, cfg);
+
+    % Small status text at bottom (grey, unobtrusive)
+    grey = cfg.white * 0.35;
+    statusTxt = sprintf('Trial %d / %d', trialNum, nTrials);
+    Screen('TextSize', w, 18);
+    DrawFormattedText(w, statusTxt, 'center', cfg.winH - 40, grey);
+    Screen('TextSize', w, 32);   % restore default
+
 function spinWaitUntil(targetSecs, cfg)
 %SPINWAITUNTIL  High-precision wait with ESCAPE check every ~100 ms
-%   spinWaitUntil(targetSecs)       — simple, no quit check
-%   spinWaitUntil(targetSecs, cfg)  — checks ESCAPE every ~100 ms
     if nargin < 2
         while (targetSecs - GetSecs) > 0.0005
             WaitSecs('YieldSecs', 0.00005);
@@ -121,7 +133,6 @@ function spinWaitUntil(targetSecs, cfg)
     end
 
 function relT = trigSendTimed(serialObj, cfg, code, t0)
-%TRIGSENDTIMED  Serial trigger pulse, returns time relative to t0
     if cfg.triggerActive && ~isempty(serialObj) && code > 0
         write(serialObj, uint8(code), 'uint8');
         absT = GetSecs;
@@ -133,7 +144,6 @@ function relT = trigSendTimed(serialObj, cfg, code, t0)
     relT = absT - t0;
 
 function trigSend(serialObj, cfg, code)
-%TRIGSEND  Serial trigger pulse, no timing return
     if cfg.triggerActive && ~isempty(serialObj) && code > 0
         write(serialObj, uint8(code), 'uint8');
         WaitSecs(cfg.trigPulseS);
@@ -141,7 +151,6 @@ function trigSend(serialObj, cfg, code)
     end
 
 function checkQuit(cfg)
-%CHECKQUIT  Immediate ESC/Q check — throws error for clean exit
     [kd, ~, kc] = KbCheck(-1);
     if kd && (kc(cfg.keys.escape) || kc(cfg.keys.q))
         error('motor_planning:userQuit', 'User quit (Escape).');
