@@ -7,8 +7,8 @@ function T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg)
         tr = T(ti);
         checkQuit(cfg);
 
-        % ── PREVIEW: fixation + trial counter ────────────────────
-        drawTrial(w, cfg, ti, nTrials);
+        % ── PREVIEW: fixation + status ───────────────────────────
+        drawTrialScreen(w, cfg, ti, nTrials);
         vbl = Screen('Flip', w, t0 + tr.previewOnset - cfg.halfIfi);
         tr.actualPreviewVbl = vbl - t0;
         trigSend(serialObj, cfg, cfg.codes.trial_start);
@@ -58,7 +58,7 @@ function T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg)
         spinWait(t0 + tr.itiOnset, cfg);
         tr.actualItiTriggerT = trigTimed(serialObj, cfg, cfg.codes.iti_start, t0);
 
-        drawTrial(w, cfg, ti, nTrials);
+        drawTrialScreen(w, cfg, ti, nTrials);
         Screen('Flip', w);
 
         if ti < nTrials
@@ -73,15 +73,17 @@ function T = mp_executeRun(w, pa, serialObj, snd, T, t0, cfg)
 
 % =====================================================================
 
-function drawTrial(w, cfg, ti, nTrials)
-%DRAWTRIAL  Fixation cross + "Trial X/Y" + "Examen en cours" (no flip)
-    Screen('FillRect', w, 0);
+function drawTrialScreen(w, cfg, ti, nTrials)
+%DRAWTRIAL  Black screen + fixation cross + grey status line (no flip)
+    Screen('FillRect', w, cfg.black);
     mp_drawFixation(w, cfg);
 
     % Small grey status at bottom
+    txt = sprintf('Examen en cours  -  Essai %d / %d', ti, nTrials);
     Screen('TextSize', w, 20);
-    txt = sprintf('Examen en cours  —  Essai %d / %d', ti, nTrials);
-    DrawFormattedText(w, txt, 'center', cfg.winH - 50, [0.3 0.3 0.3]);
+    bounds = Screen('TextBounds', w, txt);
+    textW  = bounds(3) - bounds(1);
+    Screen('DrawText', w, txt, cfg.xc - textW/2, cfg.winH - 50, cfg.grey);
     Screen('TextSize', w, 36);
 
 function spinWait(targetSecs, cfg)

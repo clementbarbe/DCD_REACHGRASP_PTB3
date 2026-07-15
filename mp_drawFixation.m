@@ -1,8 +1,7 @@
 function mp_drawFixation(w, cfg)
-%MP_DRAWFIXATION  Draw a white fixation cross at screen center
-%   Bigger cross (60x60 px, 4 px width) for better visibility.
-%   Does NOT flip.
+%MP_DRAWFIXATION  White fixation cross at center. Does NOT flip.
+%   No smoothing (smooth=0) to avoid BlendFunction requirement.
 
     sz     = 30;
     coords = [-sz sz 0 0; 0 0 -sz sz];
-    Screen('DrawLines', w, coords, 4, [1 1 1], [cfg.xc cfg.yc], 2);
+    Screen('DrawLines', w, coords, 4, cfg.white, [cfg.xc cfg.yc], 0);
