@@ -1,4 +1,4 @@
-function motor_planning()
+  function motor_planning()
 %MOTOR_PLANNING  Motor planning EEG task
 %
 %   Mode 1 = 4 runs, effecteur unique
