@@ -1,33 +1,22 @@
-function mp_saveData(T, tag, ri, eff, cfg)
-%MP_SAVEDATA  Save trial data for one run to CSV (with MAT fallback)
+function mp_saveData(events, ri, eff, cfg)
+%MP_SAVEDATA  Save event log for one run as CSV
 %
-%   mp_saveData(T, tag, ri, eff, cfg)
+%   events = struct array with fields:
+%     run, trial, event, code, time_s, condition, effector, error_ms
 %
-%   OUTPUT FILENAME:
-%     {participant}_{session}_MotorPlanning_{eff}_run{ri}_{timestamp}_{tag}.csv
-%
-%   INPUTS:
-%     T    — Struct array (1 x nTrials)
-%     tag  — 'planned' (before run) or 'actual' (after run)
-%     ri   — Run index (1-based)
-%     eff  — Effector name ('hand' or 'tool')
-%     cfg  — Config struct (needs .participant, .session, .dataDir)
-%
-%   See also motor_planning, mp_buildDesign, mp_executeRun
+%   Filename: {participant}_{session}_run{ri}_{eff}_{timestamp}.csv
 
-if ~exist(cfg.dataDir, 'dir'), mkdir(cfg.dataDir); end
+    if ~exist(cfg.dataDir, 'dir'), mkdir(cfg.dataDir); end
 
-ts    = datestr(now, 'yyyymmdd_HHMMSS');
-fname = sprintf('%s_%s_MotorPlanning_%s_run%02d_%s_%s.csv', ...
-    cfg.participant, cfg.session, eff, ri, ts, tag);
-fpath = fullfile(cfg.dataDir, fname);
+    ts    = datestr(now, 'yyyymmdd_HHMMSS');
+    fname = sprintf('%s_%s_run%02d_%s_%s.csv', ...
+                    cfg.participant, cfg.session, ri, eff, ts);
+    fpath = fullfile(cfg.dataDir, fname);
 
-try
-    writetable(struct2table(T), fpath);
-    fprintf('[OK] Saved: %s\n', fname);
-catch ME
-    warning('CSV save failed: %s', ME.message);
-    matpath = strrep(fpath, '.csv', '.mat');
-    save(matpath, 'T', 'cfg');
-    fprintf('[WARN] MAT fallback: %s\n', matpath);
-end
+    try
+        writetable(struct2table(events), fpath);
+        fprintf('[OK] Saved: %s (%d events)\n', fname, numel(events));
+    catch ME
+        warning('CSV failed: %s', ME.message);
+        save(strrep(fpath, '.csv', '.mat'), 'events', 'cfg');
+    end

@@ -1,15 +1,11 @@
 function [w, pa, serialObj, snd, cfg] = mp_initHardware(cfg)
 %MP_INITHARDWARE  Initialize audio, screen, serial port, sounds
-%   Colors are 0-255 integers (NOT 0.0-1.0 floats) for max compatibility.
+%   Colors 0-255. PsychDefaultSetup(1). No "Display OK" shown.
 
-    % ── Clean stale state ─────────────────────────────────────────────
     try InitializePsychSound(0); PsychPortAudio('Close'); catch, end
     try Screen('CloseAll'); catch, end
     WaitSecs(0.2);
 
-    % ── PTB setup — level 1 (colors stay 0-255) ──────────────────────
-    %   PsychDefaultSetup(1) = UnifyKeyNames only
-    %   PsychDefaultSetup(2) = + normalize colors to 0-1 (UNRELIABLE on some Win11 systems)
     PsychDefaultSetup(1);
     KbName('UnifyKeyNames');
     cfg.keys.escape = KbName('ESCAPE');
@@ -20,17 +16,15 @@ function [w, pa, serialObj, snd, cfg] = mp_initHardware(cfg)
     catch, cfg.keys.numEnter = cfg.keys.enter;
     end
 
-    Screen('Preference', 'SkipSyncTests',    2);
-    Screen('Preference', 'VisualDebugLevel', 0);
-    Screen('Preference', 'Verbosity',        3);
-
-    % ── Colors: always 0-255 integers ─────────────────────────────────
     cfg.black = 0;
     cfg.white = 255;
     cfg.grey  = 80;
 
-    % ── Audio BEFORE screen ───────────────────────────────────────────
-    fprintf('[INFO] Audio...\n');
+    Screen('Preference', 'SkipSyncTests',    2);
+    Screen('Preference', 'VisualDebugLevel', 0);
+    Screen('Preference', 'Verbosity',        3);
+
+    % ── Audio ─────────────────────────────────────────────────────────
     InitializePsychSound(1);
     pa = openAudio(cfg);
 
@@ -50,18 +44,12 @@ function [w, pa, serialObj, snd, cfg] = mp_initHardware(cfg)
 
     % ── Screen ────────────────────────────────────────────────────────
     screenId = cfg.screenId;
-    fprintf('[INFO] Opening screen %d...\n', screenId);
-
     [w, wRect] = Screen('OpenWindow', screenId, cfg.black);
 
-    % Validate: draw something visible immediately
     try
-        Screen('TextSize', w, 48);
+        Screen('TextSize', w, 36);
         Screen('TextFont', w, 'Arial');
-        Screen('DrawText', w, 'Display OK', 100, 100, cfg.white);
         Screen('Flip', w);
-        WaitSecs(1.0);
-        fprintf('[OK] Display OK — text visible at (100,100).\n');
     catch ME
         try PsychPortAudio('Close', pa); catch, end
         error('Window failed: %s', ME.message);
@@ -77,7 +65,7 @@ function [w, pa, serialObj, snd, cfg] = mp_initHardware(cfg)
     cfg.winW    = wRect(3) - wRect(1);
     cfg.winH    = wRect(4) - wRect(2);
 
-    fprintf('[OK] Window: %dx%d @ %d Hz on screen %d\n', ...
+    fprintf('[OK] Window: %dx%d @ %d Hz screen %d\n', ...
         cfg.winW, cfg.winH, cfg.fps, screenId);
 
     % ── Serial port ───────────────────────────────────────────────────
@@ -99,11 +87,8 @@ function pa = openAudio(cfg)
             return;
         catch, end
     end
-    try
-        pa = PsychPortAudio('Open', [], 1, 1, [], 2);
-        return;
-    catch ME
-        error('Audio failed: %s', ME.message);
+    try pa = PsychPortAudio('Open', [], 1, 1, [], 2); return;
+    catch ME, error('Audio failed: %s', ME.message);
     end
 
 function serialObj = openSerial(cfg)
@@ -145,3 +130,4 @@ function buf = loadOrGen(filepath, fs, freq, dur)
     r(end-nR+1:end) = 0.5*(1-cos(pi*(nR-1:-1:0)/nR));
     y = sin(2*pi*freq*t).*r*0.9;
     buf = [y;y];
+    fprintf('[WARN] Tone %.0f Hz for %s\n', freq, filepath);
